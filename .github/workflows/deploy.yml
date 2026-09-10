@@ -37,6 +37,14 @@ jobs:
             || { echo "::error::falta el email correcto en index.html"; exit 1; }
           echo "Validación OK: $(find . -type f -not -path './.git/*' | wc -l) archivos."
 
+      - name: Preparar solo los archivos del sitio (sin .git ni .github)
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          git ls-files | tar -cf - -T - | tar -xf - -C _site
+          echo "Preparados: $(find _site -type f | wc -l) archivos."
+          test ! -e _site/.git
+
       - name: Publicar por FTPS
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
@@ -52,7 +60,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq lftp
           for attempt in 1 2 3; do
             if lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" \
-              -e "set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; set net:timeout 20; set net:max-retries 2; set net:reconnect-interval-base 5; mirror -R --verbose --exclude-glob .git* --exclude .github/ . ${FTP_TARGET_DIR}; bye" \
+              -e "set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; set net:timeout 20; set net:max-retries 2; set net:reconnect-interval-base 5; set cmd:fail-exit no; mirror -R --verbose _site/ ${FTP_TARGET_DIR}; cd ${FTP_TARGET_DIR}; rm -rf .git; rm -rf .github; set cmd:fail-exit yes; bye" \
               "${FTP_SERVER}"; then
               exit 0
             fi
