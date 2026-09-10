@@ -89,6 +89,11 @@ jobs:
             exit 0
           fi
 
+          if grep -qiE "please wait while your request is being verified|one moment, please" page.html; then
+            echo "::warning::El hosting mostró una pantalla de espera/anti-bot en vez del sitio real. Esto NO significa que el deploy haya fallado — verificá manualmente en un navegador si tenés dudas."
+            exit 0
+          fi
+
           grep -q "Custom Woodwork" page.html \
             || { echo "::error::ecowoodworkdesigns.com no refleja este despliegue"; head -c 2000 page.html; exit 1; }
           echo "Confirmado: ecowoodworkdesigns.com refleja este despliegue."
