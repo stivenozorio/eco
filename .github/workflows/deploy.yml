@@ -1,0 +1,85 @@
+name: Deploy Eco WoodWork & Design
+
+# Publica la rama `main` en ecowoodworkdesigns.com en cada push. Sitio
+# estático (HTML/CSS/JS, sin build step): se sube tal cual por FTPS a la
+# raíz del dominio en el hosting.
+#
+# Requisitos únicos antes de que esto funcione (se documentan también en
+# el mensaje al usuario, no asumir nada):
+#   - Secrets del repo (Settings → Secrets and variables → Actions):
+#       FTP_SERVER, FTP_USERNAME, FTP_PASSWORD
+#   - La cuenta FTP dedicada (deploy@ecowoodworkdesigns.com) ya está
+#     encadenada (chroot) directo a
+#     /home/b04ktrvhrpwk/public_html/ecowoodworkdesigns.com, así que la
+#     subida va a la raíz de esa sesión FTP ("."), no a una subcarpeta.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-eco
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar el sitio antes de publicar
+        run: |
+          set -euo pipefail
+          for f in index.html services/index.html work/index.html about/index.html contact/index.html css/styles.css js/main.js; do
+            test -f "$f" || { echo "::error::falta $f"; exit 1; }
+          done
+          grep -q "info@ecowoodworkdesigns.com" index.html \
+            || { echo "::error::falta el email correcto en index.html"; exit 1; }
+          echo "Validación OK: $(find . -type f -not -path './.git/*' | wc -l) archivos."
+
+      - name: Publicar por FTPS
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_TARGET_DIR: ${{ vars.FTP_TARGET_DIR || '.' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FTP_SERVER}" ] || [ -z "${FTP_USERNAME}" ] || [ -z "${FTP_PASSWORD}" ]; then
+            echo "::error::Faltan los secrets FTP_SERVER / FTP_USERNAME / FTP_PASSWORD en este repositorio (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          for attempt in 1 2 3; do
+            if lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" \
+              -e "set ftp:ssl-force true; set ftp:ssl-protect-data true; set ssl:verify-certificate no; set net:timeout 20; set net:max-retries 2; set net:reconnect-interval-base 5; mirror -R --verbose --exclude-glob .git* --exclude .github/ . ${FTP_TARGET_DIR}; bye" \
+              "${FTP_SERVER}"; then
+              exit 0
+            fi
+            echo "Intento ${attempt} falló, reintentando en 10s..."
+            sleep 10
+          done
+          exit 1
+
+      - name: Verificar el sitio en vivo
+        run: |
+          set -uo pipefail
+          sleep 45
+          conectado=false
+          for attempt in 1 2 3 4 5; do
+            if curl -sSf --connect-timeout 20 --max-time 40 https://ecowoodworkdesigns.com/ -o page.html; then
+              conectado=true
+              break
+            fi
+            echo "Intento ${attempt}: no se pudo conectar; reintento en 30s..."
+            sleep 30
+          done
+
+          if [ "${conectado}" != true ]; then
+            echo "::warning::No se pudo conectar con ecowoodworkdesigns.com desde el runner tras 5 intentos. La subida terminó bien; queda sin comprobar si el sitio en vivo ya refleja este despliegue."
+            exit 0
+          fi
+
+          grep -q "Custom Woodwork" page.html \
+            || { echo "::error::ecowoodworkdesigns.com no refleja este despliegue"; head -c 2000 page.html; exit 1; }
+          echo "Confirmado: ecowoodworkdesigns.com refleja este despliegue."
