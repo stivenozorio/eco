@@ -51,43 +51,98 @@
     else if (desktopMq.addListener) desktopMq.addListener(onMq);
   }
 
-  /* ---------- Hero video ---------- */
+  /* ---------- Hero video: driven by scroll, never autoplays ---------- */
   const video = document.querySelector(".hero-video");
-  if (video) {
+  const heroScroll = document.querySelector("[data-hero-scroll]");
+  if (video && heroScroll) {
     const conn = navigator.connection || {};
     const saveData = conn.saveData === true || /(^|-)2g$/.test(conn.effectiveType || "");
-    const markPlaying = () => video.classList.add("is-playing");
+    const progressBar = heroScroll.querySelector(".hero-progress");
+    const mobile = window.matchMedia("(max-width: 767px)").matches;
+
+    const goStatic = (poster) => {
+      heroScroll.classList.add("is-static");
+      if (poster) {
+        video.poster = poster;
+        video.parentElement.style.backgroundImage = `url('${poster}')`;
+      }
+      video.classList.add("is-playing");
+    };
 
     if (reduceMotion || saveData) {
-      // Keep the poster frame only; don't download the video.
-      video.removeAttribute("autoplay");
+      // No scrubbing: show the final kitchen frame and skip the download.
       video.querySelectorAll("source").forEach((s) => s.remove());
       video.load();
-      markPlaying();
+      goStatic(mobile ? "/assets/video/eco-hero-poster-end-mobile.webp" : "/assets/video/eco-hero-poster-end.webp");
     } else {
-      video.muted = true;
-      video.addEventListener("playing", markPlaying, { once: true });
-      const tryPlay = () => {
-        const p = video.play();
-        if (p && p.catch) p.catch(() => markPlaying());
-      };
-      if (video.readyState >= 2) tryPlay();
-      else video.addEventListener("canplay", tryPlay, { once: true });
+      video.pause();
+      // A <source> error just means "try the next format"; only give up
+      // (static poster, no pinned scroll) when the last one fails too.
+      const sources = video.querySelectorAll("source");
+      const lastSource = sources[sources.length - 1];
+      if (lastSource) lastSource.addEventListener("error", () => goStatic());
+      video.addEventListener("error", () => goStatic());
 
-      // Pause when the hero is off-screen to save battery/CPU.
-      if ("IntersectionObserver" in window) {
-        new IntersectionObserver(
-          ([entry]) => {
-            if (entry.isIntersecting) tryPlay();
-            else video.pause();
-          },
-          { threshold: 0.05 }
-        ).observe(video);
-      }
-      document.addEventListener("visibilitychange", () => {
-        if (document.hidden) video.pause();
-        else if (video.getBoundingClientRect().bottom > 0) tryPlay();
-      });
+      let duration = 0;
+      let target = 0;
+      let current = 0;
+      let running = false;
+
+      const readProgress = () => {
+        const rect = heroScroll.getBoundingClientRect();
+        const distance = heroScroll.offsetHeight - window.innerHeight;
+        return distance > 0 ? Math.min(1, Math.max(0, -rect.top / distance)) : 0;
+      };
+
+      const tick = () => {
+        // Ease toward the scroll position so the footage glides instead of stepping.
+        current += (target - current) * 0.2;
+        if (Math.abs(target - current) < 0.001) current = target;
+        if (duration && !video.seeking && Math.abs(video.currentTime - current) > 0.01) {
+          video.currentTime = current;
+        }
+        if (current !== target) requestAnimationFrame(tick);
+        else running = false;
+      };
+
+      const onScroll = () => {
+        const p = readProgress();
+        if (progressBar) progressBar.style.setProperty("--p", p.toFixed(4));
+        if (!duration) return;
+        target = p * (duration - 0.05);
+        if (!running) {
+          running = true;
+          requestAnimationFrame(tick);
+        }
+      };
+
+      const ready = () => {
+        if (duration) return;
+        duration = video.duration || 0;
+        video.classList.add("is-playing");
+        onScroll();
+      };
+      if (video.readyState >= 1) ready();
+      video.addEventListener("loadedmetadata", ready);
+      video.addEventListener("loadeddata", ready);
+
+      // iOS Safari only buffers frames after a play() call; play-then-pause
+      // unlocks seeking without the video visibly running.
+      const unlock = () => {
+        const p = video.play();
+        const settle = () => {
+          video.pause();
+          if (duration) video.currentTime = current;
+        };
+        if (p && p.then) p.then(settle).catch(() => {});
+        else settle();
+      };
+      unlock();
+      window.addEventListener("touchstart", unlock, { once: true, passive: true });
+
+      window.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("resize", onScroll, { passive: true });
+      onScroll();
     }
   }
 
